@@ -120,3 +120,68 @@ def matchups(year: int = Query(...), week: int = Query(...), x_api_key: str = He
             "away_score":    getattr(m, "away_score", 0),
         })
     return out
+
+
+# ---------------------------------------------------------------------------
+# Box scores: every player on each team's roster for one week (ESPN has these from 2019 on)
+# ---------------------------------------------------------------------------
+NON_STARTER_SLOTS = {"BE", "IR"}
+
+
+def real_team(t):
+    return t if hasattr(t, "team_id") else None
+
+
+def num(v) -> float:
+    try:
+        return round(float(v or 0), 2)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def player_row(p) -> dict:
+    slot = str(getattr(p, "slot_position", "") or "")
+    return {
+        "player_id":     getattr(p, "playerId", 0),
+        "name":          getattr(p, "name", ""),
+        "position":      getattr(p, "position", ""),
+        "slot":          slot,
+        "starter":       slot not in NON_STARTER_SLOTS,
+        "points":        num(getattr(p, "points", 0)),
+        "projected":     num(getattr(p, "projected_points", 0)),
+        "pro_team":      getattr(p, "proTeam", "") or "",
+        "pro_opponent":  getattr(p, "pro_opponent", "") or "",
+        "injury_status": str(getattr(p, "injuryStatus", "") or ""),
+        "on_bye":        bool(getattr(p, "on_bye_week", False)),
+    }
+
+
+@app.get("/boxscores")
+def boxscores(year: int = Query(...), week: int = Query(...), x_api_key: str = Header(default="")):
+    check_key(x_api_key)
+    if year < 2019:
+        raise HTTPException(status_code=400, detail="ESPN has no box scores before 2019")
+    try:
+        league = get_league(year)
+        boxes = league.box_scores(week)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"ESPN box scores failed for {year} week {week}: {e}")
+
+    out = []
+    for b in boxes:
+        home = real_team(getattr(b, "home_team", None))
+        away = real_team(getattr(b, "away_team", None))
+        out.append({
+            "week":           week,
+            "home_team_id":   home.team_id if home else 0,
+            "home_team":      home.team_name if home else "BYE",
+            "home_score":     num(getattr(b, "home_score", 0)),
+            "home_projected": num(getattr(b, "home_projected", 0)),
+            "home_lineup":    [player_row(p) for p in (getattr(b, "home_lineup", None) or [])] if home else [],
+            "away_team_id":   away.team_id if away else 0,
+            "away_team":      away.team_name if away else "BYE",
+            "away_score":     num(getattr(b, "away_score", 0)),
+            "away_projected": num(getattr(b, "away_projected", 0)),
+            "away_lineup":    [player_row(p) for p in (getattr(b, "away_lineup", None) or [])] if away else [],
+        })
+    return out
